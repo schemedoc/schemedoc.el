@@ -1,0 +1,421 @@
+* Purpose
+
+Various discussions in the [[https://srfi-email.schemers.org/srfi-discuss/][srfi-discuss]] mailing list revolved around the topic as how to set-up an infrastructure
+allowing access to the documentation of Scheme procedures and other symbols defined by [[https://srfi.schemers.org/][Scheme SRFIs]]. A summary of these
+discussions can be found [[https://gist.github.com/FrankRuben/13856dbc63480884a9dcb6ad66fc074d][here]].
+
+While no such infrastructure is available, it can still be interesting to start to work on the Emacs side of things,
+figuring out how to best integrate documentation into the development workflow - where instead of a well thought out
+infrastructure just some helpers are used as placeholders. Below I list some crude helpers that I extracted from my
+=init.el= as a starting point - it can only get better that that ;)
+
+* Implementation options
+
+** Relevant links
+
+*** Packages provided with Emacs
+
+Emacs comes with some limited support for Scheme, namely the following packages:
+
+- scheme.el, which is a modification of the =lisp-mode=
+- cmuscheme.el, which supports working with an interactive Scheme REPL
+
+*** External packages
+
+Below is a non-exhaustive list of interesting packages around Emacs and Scheme. A more canonical overview is presented
+in the [[https://www.emacswiki.org/emacs/Scheme][EmacsWiki]]. You'll find sufficient info especially for the venerable Multi-Scheme packages Geiser and Quack
+elsewhere, so no further details here.
+
+- https://www.nongnu.org/geiser/
+- https://www.neilvandyke.org/quack/
+- https://github.com/ashinn/scheme-complete
+- https://github.com/kaz-yos/eval-in-repl/blob/master/eval-in-repl-scheme.el
+- https://www.emacswiki.org/emacs/gosh.el
+- https://github.com/leque/gauche-mode/blob/master/gauche-mode.el
+- https://github.com/mhayashi1120/Emacs-gosh-mode/blob/master/gosh-mode.el
+- https://github.com/skangas/guile/blob/master/module/ice-9/session.scm
+- https://github.com/skangas/guile/blob/master/emacs/guile-scheme.el
+- https://github.com/mjago/Emacs/blob/master/lilypond/gds.el
+- https://github.com/greghendershott/racket-mode
+- https://www-sop.inria.fr/mimosa/fp/Bigloo/doc/bigloo-36.html
+
+*** Similar features for Common Lisp and Slime
+
+The gold-standard for language integration in Emacs is Common Lisp and Slime. This combo is nearly good enough to stick
+to Common Lisp just because of Slime. For what we're after here just check =slime-describe-function= and
+=slime-describe-symbol=. Many of the Slime features are simplified by the extensive introspection capabilities of Common
+Lisp, which e.g. supports programmatic access to doc-strings of symbols.
+
+Note that Guile Scheme also provides access to the documentation for a procedure with its =procedure-documentation=
+procedure, but such documentation doesn't seem to available for (much of the) standard library.
+
+Note that there is also Slime-contrib support for Kawa, but I couldn't get that running.
+
+** Barebones Scheme support
+
+The helpers below are taken from my =init.el= and more or less heavily adapted in order to limit further dependecies to
+whatever else is in that file (and hopefully still working). Much of the code is taken and adapted from here and there -
+and sources are mostly lost; sorry for that... All variables and functions are prefixed with =mmy-= which is ugly
+enough, so replace with whatever you prefer.
+
+Note that the implementation is not exhaustive with regards to the Scheme implementations. I'm mostly using Bigloo,
+Gambit, Gauche, Guile, Kawa and Racket, so whatever is listed below has only been checked for support for these Schemes,
+others Schemes might have similar support for these features.
+
+*** Access Emacs info
+
+An easy target from within Emacs is trying to access Scheme-related documentation in info files. As anywhere else with
+Emacs and Scheme this mostly means dispatching per individual Scheme implementation and falling back or merging with
+common Scheme information.
+
+The info files for Bigloo, Gambit, Gauche, Guile and Kawa come with their respective source tarball. =r5rs.info= also
+comes with the Guile source tarball.
+
+To avoid any conflicts with other potential configuration of a prefered Scheme implementation, we provide an extra
+binding to define the Scheme implementation (as a symbol, not as string). Replace that with whatever mechanism you
+prefer.
+
+#+begin_src emacs-lisp :results none
+(defvar mmy-scheme-implementation 'gambit)
+#+end_src
+
+#+begin_src emacs-lisp :results none
+(defun mmy-scheme-info-index-search ()
+  "Look up topic for Scheme symbol at point in the index of info
+file(s) for current scheme implementation. With prefix arg show a
+virtual node with matches, where empty topic shows previous
+search results."
+  (interactive)
+  (when-let* ((file-or-node (cl-case mmy-scheme-implementation
+                              (bigloo "bigloo")
+                              (gambit "gambit")
+                              (gauche "gauche-refe")
+                              (guile "guile")
+                              (kawa "kawa")
+                              (t "r5rs")))
+              (symbol (scheme-symbol-at-point)))
+    (info file-or-node)
+    (if current-prefix-arg
+        (Info-virtual-index (symbol-name symbol))
+      (Info-index (symbol-name symbol)))))
+#+end_src
+
+#+begin_src emacs-lisp :results none
+(defun my-helm-scheme-info-at-point ()
+  "Helm for the Scheme info pages matching the current scheme implementation."
+  (interactive)
+  (when-let* ((fboundp 'helm)
+              (common-helm-info-scheme-sources '(helm-source-info-r5rs helm-source-info-sicp))
+              (helm-info-sources (cl-case mmy-scheme-implementation
+                                   (bigloo (cons 'helm-source-info-bigloo common-helm-info-scheme-sources))
+                                   (gambit (cons 'helm-source-info-gambit common-helm-info-scheme-sources))
+                                   (gauche (cons 'helm-source-info-gauche-refe common-helm-info-scheme-sources))
+                                   (guile  (cons 'helm-source-info-guile common-helm-info-scheme-sources))
+                                   (kawa   (cons 'helm-source-info-kawa common-helm-info-scheme-sources))
+                                   (t      common-helm-info-scheme-sources)))
+              (symbol (scheme-symbol-at-point)))
+    (helm :sources helm-info-sources
+          :input (symbol-name symbol))))
+#+end_src
+
+*** Access search engine query results
+
+[[https://duckduckgo.com/][DuckDuckGo]] provides a bang to access the documentation of an SRFI given by number, this again is easy enough to access
+from within Emacs. The implementation below uses =browse-url= to render the SRFI documentation page, but =eww= also
+works fine.
+
+#+begin_src emacs-lisp :results none
+(defun mmy-browse-duckduckgo-srfi ()
+  "Searches duckduckgo.com with !bang `srfi' for number under point."
+  (interactive)
+  (when-let* ((srfi-nr (thing-at-point 'number)))
+    (browse-url (concat "https://duckduckgo.com/?q=!srfi+" (number-to-string srfi-nr)))))
+#+end_src
+
+*** Access a Scheme implementation's documentation web page
+
+Most Scheme implementations provide an index page that can be used to search for symbols. Below we just wrap opening the
+relevant info page for some Scheme implementations.
+
+#+begin_src emacs-lisp :results none
+(defun mmy-browse-bigloo-index (&optional arg)
+  (interactive "P")
+  (browse-url "http://www-sop.inria.fr/mimosa/fp/Bigloo/doc/bigloo-37.html#Global-Index"))
+
+(defun mmy-browse-chez-index (&optional arg)
+  (interactive "P")
+  (browse-url "https://cisco.github.io/ChezScheme/csug9.4/csug_1.html#./csug:h0"))
+
+(defun mmy-browse-gambit-index (&optional arg)
+  (interactive "P")
+  (browse-url "http://www.iro.umontreal.ca/~gambit/doc/gambit.html#General-index"))
+
+(defun mmy-browse-guile-index (&optional arg)
+  (interactive "P")
+  (browse-url "https://www.gnu.org/software/guile/manual/html_node/Concept-Index.html#Concept-Index"))
+
+(defun mmy-browse-gauche-index (&optional arg)
+  (interactive "P")
+  (browse-url "http://practical-scheme.net/gauche/man/gauche-refe/Function-and-Syntax-Index.html"))
+
+(defun mmy-browse-kawa-index (&optional arg)
+  (interactive "P")
+  (browse-url "https://www.gnu.org/software/kawa/Overall-Index.html"))
+
+(defun mmy-browse-racket-index (&optional arg)
+  (interactive "P")
+  (let* ((local-prefix (expand-file-name "~/local/racket/share/doc/racket/"))
+         (racket-hp-prefix "https://docs.racket-lang.org/")
+         (url-suffix "reference/doc-index.html")
+         (local-url (concat local-prefix url-suffix)))
+    ;; Note: the local installation of the Racket docs does *not* support the search page at; /search/index.html?q=
+    ;;       - file:///home/frank/.racket/7.1/doc/search/index.html?q=let-values
+    ;;       the following command line command will open local docs in the browser:
+    ;;       - $ raco docs let-values
+    ;;       the following input into the Racket repl will also open the docs the browser:
+    ;;       - > ,doc let-values
+    (browse-url (if (file-exists-p local-url)
+                    (concat "file://" local-url)
+                  (concat racket-hp-prefix url-suffix)))))
+#+end_src
+
+Some Scheme implementations also provide the option to search through the documentation using a search symbol as query
+parameter. Again we can combine access to the symbol at point and the browser in simple Emacs helpers:
+
+#+begin_src emacs-lisp :results none
+(defun mmy-browse-gauche-symbol ()
+  "Searches Gauche documentation for symbol under point."
+  (interactive)
+  (when-let* ((symbol (scheme-symbol-at-point)))
+    (browse-url (concat "http://practical-scheme.net/gauche/man/?p=" (symbol-name symbol)))))
+
+(defun mmy-browse-racket-symbol ()
+  "Searches Racket documentation for symbol under point."
+  (interactive)
+  ;; This requires the Racket docs realm to be set to TRUSTED for firefox and NoScript.
+  ;; Note: there is no need to also support DuckDuckGo, since the !racket bang just opens the Racket index.
+  (when-let* ((symbol (scheme-symbol-at-point)))
+    (browse-url (concat "https://docs.racket-lang.org/search/index.html?q=" (symbol-name symbol)))))
+#+end_src
+
+*** Access documentation provided by a Scheme implementation's REPL
+
+Whereas the helpers above just work by accessing documentation available in local files or external web pages, deeper
+integration is possible when using the introspection facilities provided by a Scheme implementation - and when accessed
+from Emacs by communicating with the REPL, assuming that the REPL for the given Scheme implementation can be started.
+
+Below we're simply using =(scheme-proc)= from the cmuscheme package. This returns the current Scheme process or starts
+one using =run-scheme= - again from the cmuscheme package - if necessary. Note that this simple mechanism will not
+support the case where we want to switch between different REPLs for different implementations in case we want to switch
+the implementation within one Emacs session.
+
+#+begin_src emacs-lisp :results none
+(defun mmy-scheme-repl-docs-request ()
+  "Display documentation for Scheme symbol at point in the REPL
+of the current Scheme implementation, using the respective
+feature of that REPL."
+  (interactive)
+  (when-let* ((sp (scheme-proc))
+              (req-builder (cl-case mmy-scheme-implementation
+                             (gauche (lambda (curr-sym) (concat ",info " curr-sym "\n")))
+                             (guile  (lambda (curr-sym) (concat ",describe " curr-sym "\n")))
+                             (racket (lambda (curr-sym) (concat ",describe " curr-sym "\n")))
+                             (t      (lambda (curr-sym) (concat curr-sym "\n")))))
+              (symbol (scheme-symbol-at-point))
+              (subject (symbol-name symbol)))
+    (comint-send-string sp (funcall req-builder subject))
+    (switch-to-scheme t)))
+#+end_src
+
+*** Eldoc support using a Scheme's REPL documentation features
+
+Function `mmy-scheme-repl-docs-request' is not very elegant, because it always switches to the REPL buffer - and that
+even if no documentation has been found. Emacs `eldoc' provides a non-intrusive UI which simply displays some
+documentation information for the symbol at point in the message buffer, if available - and we can use that to have a
+more elegant way to display symbol documentation.
+
+In order to fetch the documentation, we again use the method already shown above reading - and now also parsing - the
+REPLs introspection results.
+
+#+begin_src emacs-lisp :results none
+(defun mmy--scheme-shell-send-async (string)
+  ;; https://github.com/hylang/hy-mode/blob/master/hy-mode.el Sadly this is quite unreliable, in that it doesn't always
+  ;; return the complete result, even with long timeouts for `accept-process-output' and especially for Racket. Try
+  ;; running it multiple times until it returns a value.
+  "Send STRING to internal Scheme REPL process asynchronously."
+  (let ((output-buffer " *Scheme redirect work buffer*")
+        (sp (scheme-proc)))
+    (with-current-buffer (get-buffer-create output-buffer)
+      (erase-buffer)
+      (comint-redirect-send-command-to-process string output-buffer sp nil t)
+      (set-buffer (process-buffer sp))
+      (while (and (null comint-redirect-completed)
+                  (accept-process-output sp 0.5 nil t)))
+      (set-buffer output-buffer)
+      (buffer-string))))
+
+(defvar mmy--scheme-symbol-info (make-hash-table :test #'eq))
+(defvar mmy--scheme-cached-implementation nil)
+
+(defun mmy-scheme-get-current-symbol-info ()
+  "`eldoc-documentation-function' for various Schemes."
+  (unless (eq mmy-scheme-implementation mmy--scheme-symbol-info-implementation)
+    (setq mmy--scheme-symbol-info-implementation mmy-scheme-implementation)
+    (clrhash mmy--scheme-symbol-info))
+  (cl-labels ((try-get-info (curr-sym)
+                            (if-let* ((known (gethash curr-sym mmy--scheme-symbol-info)))
+                                known
+                              (when-let* ((found (let ((curr-str (symbol-name curr-sym)))
+                                                   (cond
+                                                    ((eq mmy-scheme-implementation 'gauche)
+                                                     (let ((info (mmy--scheme-shell-send-async
+                                                                  (concat ",info " curr-str "\n"))))
+                                                       (unless (string-prefix-p "No info document for " info)
+                                                         info)))
+                                                    ((eq mmy-scheme-implementation 'guile)
+                                                     ;; Note: don't worry if nothing is found: guile seems to have
+                                                     ;;  `,describe' results only for a limited amount of bindings:
+                                                     (let ((info (mmy--scheme-shell-send-async
+                                                                  (concat ",describe " curr-str "\n"))))
+                                                       (unless (string-prefix-p "#f" info)
+                                                         info)))
+                                                    ((or (eq mmy-scheme-implementation 'racket)
+                                                         (eq mmy-scheme-implementation 'typed-racket))
+                                                     (mmy--scheme-shell-send-async (concat ",describe " curr-str "\n")))
+                                                    (t
+                                                     nil)))))
+                                (puthash curr-sym found mmy--scheme-symbol-info)))) ; `puthash' returns the passed value
+              (strip-info (str)
+                          (cond
+                           ((eq mmy-scheme-implementation 'gauche)
+                            ;; Note: this does not support the interactive case, e.g. for `format'.
+                            (string-join
+                             (cl-remove-if-not #'identity
+                                               (mapcar
+                                                (lambda (line)
+                                                  (and (string-match " -- \\(.*\\): \\(.*\\)" line)
+                                                       (match-string 2 line)))
+                                                (split-string str "\n")))
+                             "; "))
+                           ((eq mmy-scheme-implementation 'guile)
+                            (string-join
+                             (cl-remove-if-not #'identity
+                                               (mapcar
+                                                (lambda (line)
+                                                  (and (string-match "- \\(.*\\): \\(.*\\)" line) (match-string 2 line)))
+                                                (split-string str "\n")))
+                             "; "))
+                           ((or (eq mmy-scheme-implementation 'racket) (eq mmy-scheme-implementation 'typed-racket))
+                            (string-join
+                             (let ((lines (cl-remove-if
+                                           (lambda (s) (not (stringp s)))          ; here we need the empty strings
+                                           (mapcar
+                                            (lambda (s) (string-trim s "[ \t;]+")) ; now also trim the leading ';'
+                                            (split-string str "[\n]")))))
+                               (cl-loop with got-start = nil
+                                        with do-collect = nil
+                                        for line in lines
+                                        ;; switch off collecting after the usage options for binding are listed
+                                        ;; (check e.g. with `define')
+                                        when (and do-collect (zerop (length line))) do (setq do-collect nil)
+                                        ;; skip line (holding e.g. "procedure") after "documentation:"
+                                        when do-collect collect line into doc-lines
+                                        ;; output will become interesting soon:
+                                        when got-start do (setq got-start nil do-collect t)
+                                        when (eq line "documentation:") do (setq got-start t)
+                                        finally return doc-lines))
+                             "; "))
+                           (t
+                            str))))
+    (with-demoted-errors
+        (when-let* ((fboundp 'scheme-enclosing-2-sexp-prefixes) ; from scheme-complete.el
+                    (curr-syms (scheme-enclosing-2-sexp-prefixes)))
+          (when-let* ((full-info (or (try-get-info (car curr-syms))
+                                     (try-get-info (caddr curr-syms)))))
+            (strip-info full-info))))))
+
+(defun mmy-scheme-show-current-symbol-info ()
+  "Interactive test helper for `mmy-scheme-get-current-symbol-info'; just call with point at Scheme symbol."
+  (interactive)
+  (when-let ((info (mmy-scheme-get-current-symbol-info)))
+    (my-message "%s" info)))
+
+(defun mmy-scheme-init-eldoc (&optional replace)
+  "Set `eldoc-documentation-function' to `mmy-scheme-get-current-symbol-info'."
+  (make-local-variable 'eldoc-documentation-function)
+  (if replace
+      (setq eldoc-documentation-function #'mmy-scheme-get-current-symbol-info)
+    (add-function :before-until (local 'eldoc-documentation-function) #'mmy-scheme-get-current-symbol-info))
+  (eldoc-mode))
+#+end_src
+
+*** Company auto-completion support using a Scheme's REPL documentation features
+
+Another helpful integration scenario is fetching symbol information to allow auto-completion at point. The code block
+below provides a (non battle-tested) implementation of an auto-completion backend for the =company= package. Completion
+candidates are again fetched from the current REPL, using the REPLs =apropos= feature, where provided.
+
+#+begin_src emacs-lisp :results none
+(defun mmy-scheme-company-backend (command &optional arg &rest ignored)
+  "Company backend for some Schemes, based on each REPL's `,apropos' command."
+  (interactive (list 'interactive))
+  (cl-labels ((gauche-apropos->list (str)
+                                    (cl-remove-if
+                                     (lambda (s) (or (not (stringp s))
+                                                (string-match "(.*)" s)))
+                                     (split-string str)))
+              (guile-apropos->list (str)
+                                   (cl-remove-if
+                                    (lambda (s) (not (stringp s)))
+                                    (mapcar
+                                     (lambda (match-item)
+                                       (cadr (mapcar #'string-trim (split-string match-item "[:\t]"))))
+                                     (split-string str "\n"))))
+              (racket-apropos->list (request-prefix str)
+                                    (let ((response-prefix "; Matches: "))
+                                      (if (string-prefix-p response-prefix str)
+                                          (cl-remove-if
+                                           (lambda (s) (or (not (stringp s))
+                                                      (zerop (length s))
+                                                      (not (string-prefix-p request-prefix s))))
+                                           (mapcar
+                                            #'string-trim
+                                            (split-string (substring str (length response-prefix)) "[\n;,\.]")))
+                                        '()))))
+    (cl-case command
+      (interactive
+       (company-begin-backend 'mmy-scheme-company-backend))
+      (prefix
+       (cond                       ; should work for: gauche, guile and racket; nothing found for bigloo, gsi, kawa.
+        ((eq mmy-scheme-implementation 'gauche)
+         (when-let* ((symbol (scheme-symbol-at-point)))
+           (propertize (symbol-name symbol) 'fontified nil)))
+        ((eq mmy-scheme-implementation "guile")
+         (when-let* ((symbol (scheme-symbol-at-point)))
+           (propertize (symbol-name symbol) 'fontified nil)))
+        ((eq mmy-scheme-implementation "racket")
+         (when-let* ((symbol (scheme-symbol-at-point)))
+           (propertize (symbol-name symbol) 'fontified nil)))
+        (t nil)))
+      (candidates
+       (cl-remove-duplicates
+        (cond
+         ((eq mmy-scheme-implementation 'gauche)
+          ;; prepend the symbol with `^', so that we only find symbol*, but not *symbol*:
+          (gauche-apropos->list (mmy--scheme-shell-send-async (format ",apropos ^%s" arg))))
+         ((eq mmy-scheme-implementation 'guile)
+          ;; Note: this will only send the first matching line with Guile
+          (guile-apropos->list (mmy--scheme-shell-send-async (format ",apropos ^%s" arg))))
+         ((eq mmy-scheme-implementation 'racket)
+          ;; prepending the symbol with `^' won't work for Racket, so we pass the prefix to strip:
+          (racket-apropos->list arg (mmy--scheme-shell-send-async (format ",apropos %s" arg))))
+         (t nil))
+        :test 'string=))
+      (sorted t))))
+#+end_src
+
+** Providing external infrastructure to simplify Scheme development with Emacs
+
+That's what we plan to do...
+
+Also provide some context on LSP and whether and where that could be of use.
