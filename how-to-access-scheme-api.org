@@ -2,7 +2,7 @@
 
 Various discussions in the [[https://srfi-email.schemers.org/srfi-discuss/][srfi-discuss]] mailing list revolved around the topic as how to set-up an infrastructure
 allowing access to the documentation of Scheme procedures and other symbols defined by [[https://srfi.schemers.org/][Scheme SRFIs]]. A summary of these
-discussions can be found [[https://gist.github.com/FrankRuben/13856dbc63480884a9dcb6ad66fc074d][here]].
+discussions can be found [[https://github.com/schemedoc/schemedoc.el/blob/master/Initial_Discussion_Summary.md][here]].
 
 While no such infrastructure is available, it can still be interesting to start to work on the Emacs side of things,
 figuring out how to best integrate documentation into the development workflow - where instead of a well thought out
